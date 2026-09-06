@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vecmemori"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid memory engine: SQLite + FTS5 + neural embeddings for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -64,3 +64,6 @@ include = ["vecmemori*"]
 
 [tool.setuptools.package-data]
 "vecmemori.hermes" = ["plugin.yaml"]
+
+[project.scripts]
+vecmemori-mcp = "vecmemori.mcp_server:main"

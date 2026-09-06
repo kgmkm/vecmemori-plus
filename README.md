@@ -90,6 +90,7 @@ Neural embedding search is still the main semantic recall path. Japanese FTS5 is
 - **Temporal decay** — optional recency weighting
 - **Model swapping** — configurable embedding dimension and query/document prefixes
 - **Hermes Agent integration** — memory provider adapter, `fact_store` tool, prefetch, optional LLM planner/extraction
+- **MCP server** — share one memory database across MCP-capable agents (opencode, codex, gemini-cli, OpenClaw, goose, ...)
 
 ## Python API
 
@@ -153,6 +154,85 @@ Hermes-only tool actions:
 - `add`, `search`, `probe`, `related`, `reason`, `contradict`, `update`, `remove`, `list`
 
 The `reason`/`contradict` actions are pragmatic semantic recall helpers, not symbolic algebraic proof or guaranteed contradiction detection.
+
+## MCP server (multi-agent shared memory)
+
+The `vecmemori.mcp_server` module exposes the same fact memory to **any MCP host** — Hermes, opencode, codex, gemini-cli, OpenClaw, goose, and other MCP-compatible agents. All agents share one SQLite database, one embedding model, one truth.
+
+### Install and run
+
+```bash
+pip install -e ".[ja]"          # fugashi tokenization recommended for Japanese
+bash scripts/download_model.sh  # ruri-v3-310m for semantic search (optional)
+
+# quick test (FTS-only, no model):
+VECMEMORI_FTS_ONLY=1 python -m vecmemori.mcp_server
+```
+
+Configuration via environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VECMEMORI_DB` | `~/.vecmemori/memory.db` | SQLite database path (point ALL agents here) |
+| `VECMEMORI_EMBEDDING_MODEL` | `~/.vecmemori/models/ruri-v3-310m` | local SentenceTransformer model path |
+| `VECMEMORI_FTS_ONLY` | off | `1` disables embeddings (no model load, FTS5 keyword search only) |
+| `VECMEMORI_FACT_LANGUAGE` | unset | language guard for stored facts (`ja`, `en`, `ko`, `zh`) |
+| `VECMEMORI_MIN_TRUST` | `0.3` | minimum trust filter for search results |
+
+Tools exposed: `fact_store` (actions: add / search / probe / related / reason / contradict / update / remove / list) and `fact_feedback` (helpful / unhelpful).
+
+### Agent configuration snippets
+
+**Hermes Agent** — prefer the native provider (auto prefetch + sync; see below). To use the MCP server instead, add it as an MCP server pointing at the venv python.
+
+**opencode** (`~/.config/opencode/opencode.json`):
+
+```jsonc
+{
+  "mcp": {
+    "vecmemori": {
+      "type": "local",
+      "command": ["C:/Users/<you>/path/to/python.exe", "-m", "vecmemori.mcp_server"],
+      "enabled": true,
+      "environment": {
+        "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db",
+        "VECMEMORI_FACT_LANGUAGE": "ja"
+      }
+    }
+  }
+}
+```
+
+**codex** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.vecmemori]
+command = "C:/Users/<you>/path/to/python.exe"
+args = ["-m", "vecmemori.mcp_server"]
+env = { "VECMEMORI_DB" = "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE" = "ja" }
+```
+
+**gemini-cli** (`~/.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "vecmemori": {
+      "command": "C:/Users/<you>/path/to/python.exe",
+      "args": ["-m", "vecmemori.mcp_server"],
+      "env": { "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE": "ja" }
+    }
+  }
+}
+```
+
+**goose / OpenClaw** — register the same stdio command (`python -m vecmemori.mcp_server`) as an MCP server; goose via `goose configure` extensions, OpenClaw via Control UI → Settings → MCP (or `mcp.servers` in config).
+
+> **Note:** the MCP server is additive — the Hermes Agent native provider and the MCP server can share the same `VECMEMORI_DB`. Use the native provider inside Hermes (turn prefetch + LLM planner), and MCP everywhere else.
+
+### contradict action
+
+`contradict` retrieves facts semantically close to a statement so the caller can verify an assertion before writing new facts. It is a recall-based heuristic, not logic reasoning: inspect the returned candidates and judge the conflict yourself.
 
 ## Configuration
 

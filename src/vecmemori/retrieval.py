@@ -63,6 +63,7 @@ class FactRetriever:
         category: str | None = None,
         min_trust: float = 0.3,
         limit: int = 10,
+        fts_query: str | None = None,
     ) -> list[dict]:
         """Hybrid search: FTS5 candidates → neural rerank → trust weighting.
 
@@ -72,10 +73,17 @@ class FactRetriever:
         3. Trust weighting: final_score = relevance * trust_score
         4. Temporal decay (optional)
 
+        fts_query optionally overrides the FTS5 MATCH expression while the
+        original query still drives the neural embedding. Callers use it to
+        OR-expand natural-language queries without polluting the semantic path.
+
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
         self._query_embedding = None
-        candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+        candidates = self._fts_candidates(
+            fts_query if fts_query is not None else query,
+            category, min_trust, limit * 3,
+        )
 
         if not candidates:
             if self.ruri_weight > 0 and self._embedding_available():

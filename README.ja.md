@@ -154,6 +154,83 @@ Hermes専用 tool action:
 
 `reason` / `contradict` は実用的な意味検索補助であり、数学的な代数推論や完全な矛盾検出を保証するものではありません。
 
+## MCPサーバー(マルチエージェント共有メモリ)
+
+`vecmemori.mcp_server` モデルは、同じファクトメモリを **任意のMCP対応エージェント**(opencode、codex、gemini-cli、OpenClaw、goose など)に公開します。全エージェントが1つのSQLiteデータベース・1つの埋め込みモデルを共有します。
+
+### 起動
+
+```bash
+pip install -e ".[ja]"
+bash scripts/download_model.sh   # 意味検索を使う場合(任意)
+
+# 埋め込みなし(FTS専用)で素早く試す:
+VECMEMORI_FTS_ONLY=1 python -m vecmemori.mcp_server
+```
+
+環境変数:
+
+| 変数 | デフォルト | 意味 |
+|---|---|---|
+| `VECMEMORI_DB` | `~/.vecmemori/memory.db` | SQLiteパス(**全エージェントで共通化**) |
+| `VECMEMORI_EMBEDDING_MODEL` | `~/.vecmemori/models/ruri-v3-310m` | ローカル埋め込みモデル |
+| `VECMEMORI_FTS_ONLY` | off | `1` で埋め込みを無効化(FTS5のみ) |
+| `VECMEMORI_FACT_LANGUAGE` | 未設定 | 保存言語ガード(`ja`/`en`/`ko`/`zh`) |
+| `VECMEMORI_MIN_TRUST` | `0.3` | 検索の最低trust |
+
+公開ツール: `fact_store`(アクション: add / search / probe / related / reason / contradict / update / remove / list)、`fact_feedback`(helpful / unhelpful)。
+
+### 各エージェントの設定
+
+**opencode**(`~/.config/opencode/opencode.json`):
+
+```jsonc
+{
+  "mcp": {
+    "vecmemori": {
+      "type": "local",
+      "command": ["C:/Users/<you>/path/to/python.exe", "-m", "vecmemori.mcp_server"],
+      "enabled": true,
+      "environment": {
+        "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db",
+        "VECMEMORI_FACT_LANGUAGE": "ja"
+      }
+    }
+  }
+}
+```
+
+**codex**(`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.vecmemori]
+command = "C:/Users/<you>/path/to/python.exe"
+args = ["-m", "vecmemori.mcp_server"]
+env = { "VECMEMORI_DB" = "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE" = "ja" }
+```
+
+**gemini-cli**(`~/.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "vecmemori": {
+      "command": "C:/Users/<you>/path/to/python.exe",
+      "args": ["-m", "vecmemori.mcp_server"],
+      "env": { "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE": "ja" }
+    }
+  }
+}
+```
+
+**goose / OpenClaw** — 同じ stdio コマンド(`python -m vecmemori.mcp_server`)をMCPサーバーとして登録。goose は `goose configure`、OpenClaw は Control UI → Settings → MCP(または config の `mcp.servers`)。
+
+> **注意**: Hermes Agent 内では引き続きネイティブプロバイダ(自動prefetch+LLMプランナ)を推奨。MCPサーバーは他エージェント用で、同じ `VECMEMORI_DB` を共有できます。
+
+### contradictアクション
+
+`contradict` は陳述に意味的に近いファクトを検索し、**断定前に候補を確認させる**ためのアクションです。論理推論ではなくrecallベースのヒューリスティックです。返された候補を人間(またはエージェント)が比較判断します。
+
 ## 設定
 
 主な設定:
