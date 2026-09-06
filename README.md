@@ -1,20 +1,39 @@
-<h1 align="center">vecmemori</h1>
+<h1 align="center">vecmemori-plus</h1>
 <p align="center">
-  <em>Local fact memory for AI agents — SQLite + FTS5 + neural embeddings</em>
+  <em>Local fact memory for AI agents — SQLite + FTS5 + neural embeddings + MCP server for multi-agent shared memory</em>
   <br>
   <a href="README.ja.md">日本語 README</a>
 </p>
 
 ---
 
-**vecmemori** is a local, persistent fact memory engine for AI agents. It stores short facts such as user preferences, project decisions, and environment details in SQLite, then retrieves relevant facts with a dual strategy:
+**vecmemori-plus** is a local, persistent fact memory engine for AI agents.
+(The import module name stays `vecmemori` for compatibility; the pip package is `vecmemori-plus`.) It stores short facts such as user preferences, project decisions, and environment details in SQLite, then retrieves relevant facts with a dual strategy:
 
 - **FTS5 full-text search** for keyword precision
 - **Neural embeddings** for semantic similarity
 
-Embeddings are a core requirement. vecmemori is not intended to be only a keyword-search database.
+Embeddings are a core requirement. vecmemori-plus is not intended to be only a keyword-search database.
 
 > **Status:** Alpha. The core API is usable, but packaging and Hermes Agent integration may still change before a stable release.
+
+## About this fork
+
+This repository is a fork of [`iwaan10000vr/vecmemori`](https://github.com/iwaan10000vr/vecmemori) — thank you, [@iwaan](https://github.com/iwaan10000vr), for building the original Japanese-first local memory engine. All credit for the core design (SQLite + FTS5 + neural embeddings, fugashi tokenization, ruri-v3 as the default model) belongs to the upstream project.
+
+**Why we forked.** We run long-form novel projects across several AI agents (Hermes Agent, opencode, codex, gemini-cli, OpenClaw, goose) and wanted **one shared memory database** — the same characters, worldbuilding, and foreshadowing visible from every agent. The upstream project integrates only with Hermes Agent and had been quiet since May 2026, so rather than waiting, we maintain an extended distribution here.
+
+**What this fork adds (v0.2.0):**
+
+- **MCP stdio server** (`vecmemori.mcp_server`) — exposes `fact_store` (9 actions) and `fact_feedback` to any MCP-capable agent. One config line per agent, one shared SQLite DB. See [MCP server](#mcp-server-multi-agent-shared-memory).
+- **FTS5 AND-trap fix for Japanese** — natural-language queries are tokenized, Japanese particles are dropped, and the query is OR-expanded (with quoting) so full-sentence queries no longer zero out recall.
+- **`fts_query` parameter** on `FactRetriever.search()` — the FTS MATCH expression is decoupled from the embedding query, so query expansion never pollutes the semantic path.
+- **`contradict` improvement** — now searches facts similar to a statement (the upstream version only listed recent facts as a stub), so agents can check an assertion before writing it as truth.
+- **FTS-only mode** (`VECMEMORI_FTS_ONLY=1`) — run without the 1.2 GB embedding model for lightweight agents.
+- **Environment-variable configuration** — `VECMEMORI_DB`, `VECMEMORI_FACT_LANGUAGE`, etc. The MCP path has no Hermes dependency.
+- **Setup snippets** for opencode / codex / gemini-cli / goose / OpenClaw, and an end-to-end stdio test (`tests/test_mcp_e2e.py`).
+
+The Hermes Agent provider adapter is kept and unchanged in behavior.
 
 ## Privacy model
 
@@ -303,6 +322,8 @@ Third-party license information is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTIC
 
 ## Acknowledgments
 
-vecmemori began as a fork/rewrite of the MIT-licensed `holographic` memory plugin bundled with [Hermes Agent](https://github.com/nousresearch/hermes-agent) by Nous Research. Since then it has been extracted into a standalone package and simplified around FTS5 + neural embedding retrieval.
+**vecmemori-plus** exists thanks to [@iwaan](https://github.com/iwaan10000vr) — the upstream [`vecmemori`](https://github.com/iwaan10000vr/vecmemori) author. This fork is built directly on that work: the core store/retriever design, the Japanese FTS5 approach with fugashi, and the choice of cl-nagoya's ruri-v3 as the default embedding model all come from upstream. Thank you for the clean, well-documented foundation.
 
-Thanks to the maintainers of Hermes Agent, SQLite, NumPy, sentence-transformers, PyTorch, fugashi/MeCab, UniDic, and cl-nagoya's ruri models.
+Going one layer deeper, upstream vecmemori itself began as a fork/rewrite of the MIT-licensed `holographic` memory plugin bundled with [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research — our fork is the third generation of that lineage.
+
+Thanks also to the maintainers of Hermes Agent, SQLite, NumPy, sentence-transformers, PyTorch, fugashi/MeCab, UniDic, and cl-nagoya's ruri models.

@@ -1,20 +1,39 @@
-<h1 align="center">vecmemori</h1>
+<h1 align="center">vecmemori-plus</h1>
 <p align="center">
-  <em>AIエージェントのためのローカル事実記憶 — SQLite + FTS5 + ニューラル埋め込み</em>
+  <em>AIエージェントのためのローカル事実記憶 — SQLite + FTS5 + ニューラル埋め込み + マルチエージェント共有MCPサーバー</em>
   <br>
   <a href="README.md">English README</a>
 </p>
 
 ---
 
-**vecmemori** は、AIエージェント向けのローカル・永続的な事実記憶エンジンです。ユーザーの好み、プロジェクトの決定事項、環境情報などの短い事実を SQLite に保存し、次の2系統で関連する記憶を検索します。
+**vecmemori-plus** は、AIエージェント向けのローカル・永続的な事実記憶エンジンです。
+(import モジュール名は互換性のため `vecmemori` のまま。pip パッケージ名は `vecmemori-plus` です。)ユーザーの好み、プロジェクトの決定事項、環境情報などの短い事実を SQLite に保存し、次の2系統で関連する記憶を検索します。
 
 - **FTS5全文検索** — キーワード一致の精度を担当
 - **ニューラル埋め込み** — 意味的な近さを担当
 
-埋め込みは中核機能です。vecmemori は「単なる全文検索DB」ではなく、意味検索を前提としたメモリシステムです。
+埋め込みは中核機能です。vecmemori-plus は「単なる全文検索DB」ではなく、意味検索を前提としたメモリシステムです。
 
 > **ステータス:** Alpha。コアAPIは利用可能ですが、安定版まではパッケージングや Hermes Agent 連携方法が変わる可能性があります。
+
+## このフォークについて
+
+このリポジトリは [`iwaan10000vr/vecmemori`](https://github.com/iwaan10000vr/vecmemori) のフォークです。日本語ローカルメモリエンジンを生み出した [@iwaan](https://github.com/iwaan10000vr) に感謝します。コア設計(SQLite + FTS5 + ニューラル埋め込み、fugashi による分かち書き、デフォルトモデルとしての ruri-v3)の功績はすべて上流プロジェクトに帰属します。
+
+**フォークの意図。** 私たちは長編小説プロジェクトを複数のAIエージェント(Hermes Agent、opencode、codex、gemini-cli、OpenClaw、goose)で運用しており、**全エージェントから1つの共有メモリDB**を参照したい — 同じキャラ設定・世界観・伏線がどのエージェントからも見える状態 — を目指しました。上流は Hermes Agent 専用の統合で、2026年5月以降更新が静かだったため、待つのではなく拡張版をこのリポジトリで保守することにしました。
+
+**このフォークが追加したもの(v0.2.0):**
+
+- **MCP stdioサーバー**(`vecmemori.mcp_server`)— `fact_store`(9アクション)と `fact_feedback` を任意のMCP対応エージェントに公開。各エージェントの設定1行+共通SQLite DB 1つで接続。詳細は [MCPサーバー](#mcpサーバーマルチエージェント共有メモリ)。
+- **日本語FTS5のAND罠の解消** — 自然文クエリをトークナイズし、日本語の助詞を除去、OR展開+引用符化。全文クエリでも recall が0にならない。
+- **`FactRetriever.search()` の `fts_query` パラメータ** — FTS5 MATCH 式を埋め込みクエリから分離。クエリ展開が意味検索経路を汚染しない。
+- **`contradict` の改善** — 陳述に類似するファクトを検索するようになりました(上流は最近のファクト一覧を返すだけのスタブ)。断定前に確認できる。
+- **FTS専用モード**(`VECMEMORI_FTS_ONLY=1`)— 1.2GBの埋め込みモデルなしで動作。軽量エージェント向け。
+- **環境変数による設定** — `VECMEMORI_DB`、`VECMEMORI_FACT_LANGUAGE` など。MCP経路に Hermes 依存なし。
+- **opencode / codex / gemini-cli / goose / OpenClaw の設定スニペット** と stdio E2E テスト(`tests/test_mcp_e2e.py`)。
+
+Hermes Agent 用プロバイダアダプタは挙動を変えずに維持しています。
 
 ## プライバシーモデル
 
@@ -300,6 +319,8 @@ MIT — [LICENSE](LICENSE) を参照。
 
 ## 謝辞
 
-vecmemori は、Nous Research の [Hermes Agent](https://github.com/nousresearch/hermes-agent) に含まれていた MIT ライセンスの `holographic` memory plugin のフォーク/再実装として始まりました。その後、standalone package として独立し、FTS5 + ニューラル埋め込み検索を中心に整理されています。
+**vecmemori-plus** は、上流 [`vecmemori`](https://github.com/iwaan10000vr/vecmemori) の作者である [@iwaan](https://github.com/iwaan10000vr) に大きく負っています。このフォークはその成果の上に成り立っています — コアのストア/レトリーバ設計、fugashi による日本語FTS5のアプローチ、デフォルト埋め込みモデルとしての cl-nagoya の ruri-v3 採用は、すべて上流から来ています。きれいで読みやすい土台をありがとうございます。
 
-Hermes Agent、SQLite、NumPy、sentence-transformers、PyTorch、fugashi/MeCab、UniDic、cl-nagoya の ruri モデルの開発者・メンテナーに感謝します。
+さらに遡ると、上流 vecmemori 自体が Nous Research の [Hermes Agent](https://github.com/NousResearch/hermes-agent) に同梱されていた MIT ライセンスの `holographic` memory plugin のフォーク/再実装として始まりました。このリポジトリはその系譜の第3世代です。
+
+Hermes Agent、SQLite、NumPy、sentence-transformers、PyTorch、fugashi/MeCab、UniDic、cl-nagoya の ruri モデルの開発者・メンテナーにも感謝します。
