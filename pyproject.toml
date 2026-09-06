@@ -3,14 +3,14 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vecmemori"
+name = "vecmemori-plus"
 version = "0.2.0"
 description = "Hybrid memory engine: SQLite + FTS5 + neural embeddings for AI agents"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.10"
-keywords = ["memory", "ai-agent", "embeddings", "sqlite", "fts5", "sentence-transformers"]
+keywords = ["memory", "ai-agent", "embeddings", "sqlite", "fts5", "sentence-transformers", "mcp"]
 authors = [
     {name = "iwaan"},
 ]
@@ -42,7 +42,7 @@ hermes = [
     "httpx>=0.27.0",
 ]
 all = [
-    "vecmemori[ja]",
+    "vecmemori-plus[ja]",
     "PyYAML>=6.0",
     "httpx>=0.27.0",
 ]

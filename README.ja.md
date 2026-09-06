@@ -31,10 +31,10 @@
 ## インストール
 
 ```bash
-pip install vecmemori
-pip install vecmemori[ja]       # fugashi + unidic-lite による日本語FTS5対応
-pip install vecmemori[hermes]   # Hermes Agent 環境向けアダプター依存
-pip install vecmemori[all]      # 日本語 + Hermes アダプター依存
+pip install vecmemori-plus
+pip install vecmemori-plus[ja]       # fugashi + unidic-lite による日本語FTS5対応
+pip install vecmemori-plus[hermes]   # Hermes Agent 環境向けアダプター依存
+pip install vecmemori-plus[all]      # 日本語 + Hermes アダプター依存
 ```
 
 事実の保存・検索の前に、ローカル埋め込みモデルを用意します。
@@ -71,10 +71,10 @@ for r in results:
 
 ## 日本語FTS5対応
 
-SQLite 標準の `unicode61` tokenizer は日本語をうまく分割できません。`vecmemori[ja]` を入れると [fugashi](https://github.com/polm/fugashi) / MeCab で事前分かち書きしてから FTS5 に登録します。
+SQLite 標準の `unicode61` tokenizer は日本語をうまく分割できません。`vecmemori-plus[ja]` を入れると [fugashi](https://github.com/polm/fugashi) / MeCab で事前分かち書きしてから FTS5 に登録します。
 
 ```bash
-pip install vecmemori[ja]
+pip install vecmemori-plus[ja]
 python -c "from vecmemori._tokenizer import has_tokenizer; print('Japanese FTS5:', has_tokenizer())"
 ```
 
@@ -111,7 +111,7 @@ store.close()
 
 ## Hermes Agent連携
 
-`vecmemori[hermes]` は Hermes plugin module に必要な `PyYAML` / `httpx` などを入れます。Hermes Agent本体はインストールしません。既に Hermes Agent が入っている環境に追加するための extra です。
+`vecmemori-plus[hermes]` は Hermes plugin module に必要な `PyYAML` / `httpx` などを入れます。Hermes Agent本体はインストールしません。既に Hermes Agent が入っている環境に追加するための extra です。
 
 ### GitHub から Hermes Agent に入れる
 

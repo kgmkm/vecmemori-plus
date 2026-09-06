@@ -31,10 +31,10 @@ Do not enable those options unless the configured provider is acceptable for you
 ## Installation
 
 ```bash
-pip install vecmemori
-pip install vecmemori[ja]       # Japanese FTS5 tokenization with fugashi + unidic-lite
-pip install vecmemori[hermes]   # adapter dependencies for Hermes Agent environments
-pip install vecmemori[all]      # Japanese + Hermes adapter dependencies
+pip install vecmemori-plus
+pip install vecmemori-plus[ja]       # Japanese FTS5 tokenization with fugashi + unidic-lite
+pip install vecmemori-plus[hermes]   # adapter dependencies for Hermes Agent environments
+pip install vecmemori-plus[all]      # Japanese + Hermes adapter dependencies
 ```
 
 Install a local embedding model before writing/searching facts:
@@ -74,7 +74,7 @@ For explicit tests or diagnostics without embeddings, pass `require_embeddings=F
 SQLite's default `unicode61` tokenizer does not segment Japanese text well. Install the Japanese extra to pre-tokenize text with [fugashi](https://github.com/polm/fugashi) / MeCab:
 
 ```bash
-pip install vecmemori[ja]
+pip install vecmemori-plus[ja]
 python -c "from vecmemori._tokenizer import has_tokenizer; print('Japanese FTS5:', has_tokenizer())"
 ```
 
@@ -112,7 +112,7 @@ store.close()
 
 ## Hermes Agent integration
 
-`vecmemori[hermes]` installs the adapter dependencies (`PyYAML`, `httpx`) needed by the Hermes plugin module. It does **not** install Hermes Agent itself. Use this extra inside an environment where Hermes Agent is already installed/configured.
+`vecmemori-plus[hermes]` installs the adapter dependencies (`PyYAML`, `httpx`) needed by the Hermes plugin module. It does **not** install Hermes Agent itself. Use this extra inside an environment where Hermes Agent is already installed/configured.
 
 ### Install into Hermes Agent from GitHub
 

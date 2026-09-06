@@ -463,7 +463,7 @@ def fact_feedback(
 
 def create_server() -> MCPServer:
     server = MCPServer(
-        name="vecmemori",
+        name="vecmemori-plus",
         version="0.2.0",
         instructions=(
             "Local fact memory (SQLite + FTS5 + optional Japanese embeddings). "
