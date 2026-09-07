@@ -21,7 +21,7 @@ Embeddings are a core requirement. vecmemori-plus is not intended to be only a k
 
 This repository is a fork of [`iwaan10000vr/vecmemori`](https://github.com/iwaan10000vr/vecmemori) — thank you, [@iwaan](https://github.com/iwaan10000vr), for building the original Japanese-first local memory engine. All credit for the core design (SQLite + FTS5 + neural embeddings, fugashi tokenization, ruri-v3 as the default model) belongs to the upstream project.
 
-**Why we forked.** We run long-form novel projects across several AI agents (Hermes Agent, opencode, goose, OpenClaw) and wanted **one shared memory database** — the same characters, worldbuilding, and foreshadowing visible from every agent. The upstream project integrates only with Hermes Agent and had been quiet since May 2026, so rather than waiting, we maintain an extended distribution here.
+**Why we forked.** We run long-form novel projects across several AI agents (Hermes Agent, opencode, goose, OpenClaw) and wanted **one shared memory database** — the same characters, worldbuilding, and foreshadowing visible from every agent. The upstream project needed an update to its Hermes Agent-only integration, and we also had feature extensions in mind — such as supporting other agents — so we maintain an extended distribution in this repository.
 
 **What this fork adds (v0.2.0):**
 
