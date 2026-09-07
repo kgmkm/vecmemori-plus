@@ -21,7 +21,7 @@
 
 このリポジトリは [`iwaan10000vr/vecmemori`](https://github.com/iwaan10000vr/vecmemori) のフォークです。日本語ローカルメモリエンジンを生み出した [@iwaan](https://github.com/iwaan10000vr) に感謝します。コア設計(SQLite + FTS5 + ニューラル埋め込み、fugashi による分かち書き、デフォルトモデルとしての ruri-v3)の功績はすべて上流プロジェクトに帰属します。
 
-**フォークの意図。** 私たちは長編小説プロジェクトを複数のAIエージェント(Hermes Agent、opencode、codex、gemini-cli、OpenClaw、goose)で運用しており、**全エージェントから1つの共有メモリDB**を参照したい — 同じキャラ設定・世界観・伏線がどのエージェントからも見える状態 — を目指しました。上流は Hermes Agent 専用の統合で、2026年5月以降更新が静かだったため、待つのではなく拡張版をこのリポジトリで保守することにしました。
+**フォークの意図。** 私たちは長編小説プロジェクトを複数のAIエージェント(Hermes Agent、opencode、goose、OpenClaw)で運用しており、**全エージェントから1つの共有メモリDB**を参照したい — 同じキャラ設定・世界観・伏線がどのエージェントからも見える状態 — を目指しました。上流は Hermes Agent 専用の統合で、2026年5月以降更新が静かだったため、待つのではなく拡張版をこのリポジトリで保守することにしました。
 
 **このフォークが追加したもの(v0.2.0):**
 
@@ -31,7 +31,7 @@
 - **`contradict` の改善** — 陳述に類似するファクトを検索するようになりました(上流は最近のファクト一覧を返すだけのスタブ)。断定前に確認できる。
 - **FTS専用モード**(`VECMEMORI_FTS_ONLY=1`)— 1.2GBの埋め込みモデルなしで動作。軽量エージェント向け。
 - **環境変数による設定** — `VECMEMORI_DB`、`VECMEMORI_FACT_LANGUAGE` など。MCP経路に Hermes 依存なし。
-- **opencode / codex / gemini-cli / goose / OpenClaw の設定スニペット** と stdio E2E テスト(`tests/test_mcp_e2e.py`)。
+- **opencode / goose / OpenClaw の設定スニペット(接続テスト済み)** と stdio E2E テスト(`tests/test_mcp_e2e.py`)。
 
 Hermes Agent 用プロバイダアダプタは挙動を変えずに維持しています。
 
@@ -175,7 +175,9 @@ Hermes専用 tool action:
 
 ## MCPサーバー(マルチエージェント共有メモリ)
 
-`vecmemori.mcp_server` モデルは、同じファクトメモリを **任意のMCP対応エージェント**(opencode、codex、gemini-cli、OpenClaw、goose など)に公開します。全エージェントが1つのSQLiteデータベース・1つの埋め込みモデルを共有します。
+`vecmemori.mcp_server` モデルは、同じファクトメモリを **任意のMCP対応エージェント**(opencode、goose、OpenClaw など)に公開します。
+
+> **接続テスト済み**: opencode 1.18 / goose 1.49 / OpenClaw 2026.9(書き込み+クロスエージェント読み取り+feedback を単一共有DBで検証)。全エージェントが1つのSQLiteデータベース・1つの埋め込みモデルを共有します。
 
 ### 起動
 
@@ -214,29 +216,6 @@ VECMEMORI_FTS_ONLY=1 python -m vecmemori.mcp_server
         "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db",
         "VECMEMORI_FACT_LANGUAGE": "ja"
       }
-    }
-  }
-}
-```
-
-**codex**(`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.vecmemori]
-command = "C:/Users/<you>/path/to/python.exe"
-args = ["-m", "vecmemori.mcp_server"]
-env = { "VECMEMORI_DB" = "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE" = "ja" }
-```
-
-**gemini-cli**(`~/.gemini/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "vecmemori": {
-      "command": "C:/Users/<you>/path/to/python.exe",
-      "args": ["-m", "vecmemori.mcp_server"],
-      "env": { "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE": "ja" }
     }
   }
 }

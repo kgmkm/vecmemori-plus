@@ -21,7 +21,7 @@ Embeddings are a core requirement. vecmemori-plus is not intended to be only a k
 
 This repository is a fork of [`iwaan10000vr/vecmemori`](https://github.com/iwaan10000vr/vecmemori) — thank you, [@iwaan](https://github.com/iwaan10000vr), for building the original Japanese-first local memory engine. All credit for the core design (SQLite + FTS5 + neural embeddings, fugashi tokenization, ruri-v3 as the default model) belongs to the upstream project.
 
-**Why we forked.** We run long-form novel projects across several AI agents (Hermes Agent, opencode, codex, gemini-cli, OpenClaw, goose) and wanted **one shared memory database** — the same characters, worldbuilding, and foreshadowing visible from every agent. The upstream project integrates only with Hermes Agent and had been quiet since May 2026, so rather than waiting, we maintain an extended distribution here.
+**Why we forked.** We run long-form novel projects across several AI agents (Hermes Agent, opencode, goose, OpenClaw) and wanted **one shared memory database** — the same characters, worldbuilding, and foreshadowing visible from every agent. The upstream project integrates only with Hermes Agent and had been quiet since May 2026, so rather than waiting, we maintain an extended distribution here.
 
 **What this fork adds (v0.2.0):**
 
@@ -31,7 +31,7 @@ This repository is a fork of [`iwaan10000vr/vecmemori`](https://github.com/iwaan
 - **`contradict` improvement** — now searches facts similar to a statement (the upstream version only listed recent facts as a stub), so agents can check an assertion before writing it as truth.
 - **FTS-only mode** (`VECMEMORI_FTS_ONLY=1`) — run without the 1.2 GB embedding model for lightweight agents.
 - **Environment-variable configuration** — `VECMEMORI_DB`, `VECMEMORI_FACT_LANGUAGE`, etc. The MCP path has no Hermes dependency.
-- **Setup snippets** for opencode / codex / gemini-cli / goose / OpenClaw, and an end-to-end stdio test (`tests/test_mcp_e2e.py`).
+- **Setup snippets** for opencode / goose / OpenClaw (connection-tested), and an end-to-end stdio test (`tests/test_mcp_e2e.py`).
 
 The Hermes Agent provider adapter is kept and unchanged in behavior.
 
@@ -109,7 +109,7 @@ Neural embedding search is still the main semantic recall path. Japanese FTS5 is
 - **Temporal decay** — optional recency weighting
 - **Model swapping** — configurable embedding dimension and query/document prefixes
 - **Hermes Agent integration** — memory provider adapter, `fact_store` tool, prefetch, optional LLM planner/extraction
-- **MCP server** — share one memory database across MCP-capable agents (opencode, codex, gemini-cli, OpenClaw, goose, ...)
+- **MCP server** — share one memory database across MCP-capable agents (opencode, goose, OpenClaw, ...)
 
 ## Python API
 
@@ -176,7 +176,9 @@ The `reason`/`contradict` actions are pragmatic semantic recall helpers, not sym
 
 ## MCP server (multi-agent shared memory)
 
-The `vecmemori.mcp_server` module exposes the same fact memory to **any MCP host** — Hermes, opencode, codex, gemini-cli, OpenClaw, goose, and other MCP-compatible agents. All agents share one SQLite database, one embedding model, one truth.
+The `vecmemori.mcp_server` module exposes the same fact memory to **any MCP host** — Hermes, opencode, goose, OpenClaw, and other MCP-compatible agents. All agents share one SQLite database, one embedding model, one truth.
+
+> **Connection-tested:** opencode 1.18, goose 1.49, OpenClaw 2026.9 (write + cross-agent read + feedback verified against one shared DB).
 
 ### Install and run
 
@@ -217,29 +219,6 @@ Tools exposed: `fact_store` (actions: add / search / probe / related / reason / 
         "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db",
         "VECMEMORI_FACT_LANGUAGE": "ja"
       }
-    }
-  }
-}
-```
-
-**codex** (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.vecmemori]
-command = "C:/Users/<you>/path/to/python.exe"
-args = ["-m", "vecmemori.mcp_server"]
-env = { "VECMEMORI_DB" = "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE" = "ja" }
-```
-
-**gemini-cli** (`~/.gemini/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "vecmemori": {
-      "command": "C:/Users/<you>/path/to/python.exe",
-      "args": ["-m", "vecmemori.mcp_server"],
-      "env": { "VECMEMORI_DB": "C:/Users/<you>/.vecmemori/memory.db", "VECMEMORI_FACT_LANGUAGE": "ja" }
     }
   }
 }
