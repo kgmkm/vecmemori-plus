@@ -19,6 +19,8 @@ Environment variables:
     VECMEMORI_DEFAULT_TRUST    trust for new facts (default 0.5)
     VECMEMORI_FACT_LANGUAGE    language guard for stored facts ("ja", "en",
                                ...; empty/unset = no guard)
+    VECMEMORI_CATEGORY_SCOPE   optional operator-set category isolation
+    VECMEMORI_READ_ONLY        "1"/"true" disables mutation tools
 
 Usage:
     python -m vecmemori.mcp_server
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -54,7 +57,7 @@ def _setup_logging() -> Path:
 _LOG_PATH = _setup_logging()
 
 from vecmemori import MemoryStore, FactRetriever  # noqa: E402
-from mcp.server.mcpserver import MCPServer  # noqa: E402
+from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Language guard (subset of the Hermes adapter's guard, MCP-safe default)
@@ -99,15 +102,12 @@ def _validate_fact_write(language: str | None, content: str) -> str | None:
     return _language_guard_error(language, content)
 
 
-# FTS5 AND-joins space-separated tokens, which kills recall on full Japanese
-# sentences (a single unshared token zeroes the whole query). The bundled
-# holographic provider solves the same problem by OR-expanding; we do the same
-# after tokenizing, dropping high-frequency Japanese particles first.
+# OR-expand natural-language searches while quoting each token. The MCP
+# caller never supplies executable FTS syntax; drop Japanese particles first.
 _JA_STOPWORDS = frozenset(
     "は が を に へ と で や か も の な だ です ます た て で に から まで "
     "これ それ あれ この その あの する した なる ある いる こと もの".split()
 )
-_FTS_OPERATOR = re.compile(r'[("*^]|\b(?:AND|OR|NOT)\b')
 # Word token for FTS matching: letters/digits of any script, or CJK/kana chars
 _WORD_TOKEN = re.compile(
     r"^[\w\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]+$", re.UNICODE
@@ -117,18 +117,21 @@ _WORD_TOKEN = re.compile(
 def _fts_query_expand(query: str) -> str:
     """Tokenize then OR-expand a natural-language query for FTS5 MATCH.
 
-    Advanced FTS5 syntax (operators present) is passed through untouched.
+    Callers cannot inject FTS5 operators.
     Punctuation-only tokens ("?", "。", ...) and non-word tokens are dropped,
     and every kept token is double-quoted so reserved words (OR, NEAR) or
     digits cannot break the MATCH expression.
     """
-    if not query or _FTS_OPERATOR.search(query):
+    if not query:
         return query
     from vecmemori._tokenizer import tokenize_query
 
-    tokens = tokenize_query(query).split()
+    tokens = re.findall(r"[\w\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]+",
+                        tokenize_query(query), re.UNICODE)
     kept: list[str] = []
     for tok in tokens:
+        if len(kept) >= 20:
+            break
         if tok in _JA_STOPWORDS:
             continue
         if not _WORD_TOKEN.fullmatch(tok):
@@ -136,7 +139,7 @@ def _fts_query_expand(query: str) -> str:
         if tok not in kept:
             kept.append(tok)
     if not kept:
-        return query
+        raise ValueError("query contains no searchable terms")
     if len(kept) == 1:
         return f'"{kept[0]}"'
     return " OR ".join(f'"{t}"' for t in kept)
@@ -155,7 +158,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.environ.get(name, default))
+        value = float(os.environ.get(name, default))
+        return value if math.isfinite(value) else default
     except (TypeError, ValueError):
         return default
 
@@ -169,6 +173,8 @@ class _Config:
     min_trust: float
     default_trust: float
     fact_language: str | None
+    category_scope: str | None
+    read_only: bool
 
 
 def _load_config() -> _Config:
@@ -184,6 +190,8 @@ def _load_config() -> _Config:
     cfg.min_trust = _env_float("VECMEMORI_MIN_TRUST", 0.3)
     cfg.default_trust = _env_float("VECMEMORI_DEFAULT_TRUST", 0.5)
     cfg.fact_language = _normalize_language(os.environ.get("VECMEMORI_FACT_LANGUAGE", ""))
+    cfg.category_scope = os.environ.get("VECMEMORI_CATEGORY_SCOPE", "").strip() or None
+    cfg.read_only = _env_bool("VECMEMORI_READ_ONLY")
     return cfg
 
 
@@ -238,9 +246,39 @@ _configure_embedder()
 # fact_store handler (ported from the Hermes adapter, actions preserved)
 # ---------------------------------------------------------------------------
 
+MAX_TOOL_RESULTS = 50
+_MAX_QUERY_CHARS = 256
+
+
+def _effective_category(requested: str | None) -> str | None:
+    """Operator scope wins over requests; clients cannot escape their category."""
+    scope = CONFIG.category_scope
+    if scope is not None and requested is not None and requested != scope:
+        raise ValueError("category outside configured scope")
+    return scope if scope is not None else requested
+
+
+def _checked_limit(args: dict) -> int:
+    limit = args.get("limit", 10)
+    if type(limit) is not int or not (1 <= limit <= MAX_TOOL_RESULTS):
+        raise ValueError(f"limit must be an integer from 1 to {MAX_TOOL_RESULTS}")
+    return limit
+
+
+def _checked_query(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > _MAX_QUERY_CHARS:
+        raise ValueError(f"query must be nonempty text of at most {_MAX_QUERY_CHARS} characters")
+    return value
+
+
 def _handle_fact_store(args: dict) -> str:
     try:
         action = args["action"]
+        if CONFIG.read_only and action in ("add", "update", "remove"):
+            return _tool_error("read-only memory server: mutation disabled")
+        category = _effective_category(args.get("category"))
+        if action in ("search", "probe", "related", "reason", "contradict", "list"):
+            limit = _checked_limit(args)
         store, retriever = _get_state()
 
         if action == "add":
@@ -250,51 +288,48 @@ def _handle_fact_store(args: dict) -> str:
                 return _tool_error(validation_error)
             fact_id = store.add_fact(
                 content,
-                category=args.get("category", "general"),
-                tags=args.get("tags", ""),
+                category=category or "general",
+                tags=args.get("tags") or "",
             )
             return _json({"fact_id": fact_id, "status": "added"})
 
         if action == "search":
             results = _hybrid_search(
                 retriever,
-                args["query"],
-                category=args.get("category"),
+                _checked_query(args["query"]),
+                category=category,
                 min_trust=float(args.get("min_trust", CONFIG.min_trust)),
-                limit=int(args.get("limit", 10)),
+                limit=limit,
             )
             return _json({"results": results, "count": len(results)})
 
         if action == "probe":
-            entity = args.get("entity", "")
-            if not entity:
-                return _tool_error("probe requires 'entity'")
+            entity = _checked_query(args.get("entity", ""))
             results = _hybrid_search(
                 retriever,
                 entity,
-                category=args.get("category"),
+                category=category,
                 min_trust=float(args.get("min_trust", CONFIG.min_trust)),
-                limit=int(args.get("limit", 10)),
+                limit=limit,
             )
             return _json({"results": results, "count": len(results)})
 
         if action == "related":
-            entity = args.get("entity", "")
-            if not entity:
-                return _tool_error("related requires 'entity'")
+            entity = _checked_query(args.get("entity", ""))
             results = _hybrid_search(
                 retriever,
                 entity,
-                category=args.get("category"),
+                category=category,
                 min_trust=float(args.get("min_trust", CONFIG.min_trust)),
-                limit=int(args.get("limit", 10)),
+                limit=limit,
             )
             return _json({"results": results, "count": len(results)})
 
         if action == "reason":
             entities = args.get("entities", [])
-            if not entities:
-                return _tool_error("reason requires 'entities' list")
+            if not isinstance(entities, list) or not (1 <= len(entities) <= 8):
+                return _tool_error("reason requires 1–8 entities")
+            entities = [_checked_query(entity) for entity in entities]
             # Not symbolic reasoning: pragmatic multi-query semantic recall,
             # unioned by fact_id (same policy as the Hermes adapter).
             seen: set[int] = set()
@@ -303,29 +338,28 @@ def _handle_fact_store(args: dict) -> str:
                 for result in _hybrid_search(
                     retriever,
                     entity,
-                    category=args.get("category"),
+                    category=category,
                     min_trust=float(args.get("min_trust", CONFIG.min_trust)),
-                    limit=int(args.get("limit", 10)),
+                    limit=limit,
                 ):
                     fid = result.get("fact_id")
                     if fid not in seen:
                         seen.add(fid)
                         merged.append(result)
+            merged = merged[:limit]
             return _json({"results": merged, "count": len(merged)})
 
         if action == "contradict":
             # Improvement over the Hermes adapter's stub (which only listed
             # recent facts): retrieve facts semantically close to the
             # statement so the caller can inspect likely conflicts directly.
-            statement = args.get("statement", "")
-            if not statement:
-                return _tool_error("contradict requires 'statement'")
+            statement = _checked_query(args.get("statement", ""))
             results = _hybrid_search(
                 retriever,
                 statement,
-                category=args.get("category"),
+                category=category,
                 min_trust=0.0,
-                limit=int(args.get("limit", 10)),
+                limit=limit,
             )
             return _json({
                 "results": results,
@@ -335,6 +369,12 @@ def _handle_fact_store(args: dict) -> str:
             })
 
         if action == "update":
+            trust_delta = (float(args["trust_delta"])
+                           if args.get("trust_delta") is not None else None)
+            if trust_delta is not None and (
+                not math.isfinite(trust_delta) or abs(trust_delta) > 0.1
+            ):
+                return _tool_error("trust_delta must be between -0.1 and 0.1")
             if "content" in args and args.get("content") is not None:
                 validation_error = _validate_fact_write(CONFIG.fact_language, args["content"])
                 if validation_error:
@@ -342,21 +382,24 @@ def _handle_fact_store(args: dict) -> str:
             updated = store.update_fact(
                 int(args["fact_id"]),
                 content=args.get("content"),
-                trust_delta=float(args["trust_delta"]) if "trust_delta" in args else None,
+                trust_delta=trust_delta,
                 tags=args.get("tags"),
                 category=args.get("category"),
+                scope=CONFIG.category_scope,
             )
             return _json({"updated": updated})
 
         if action == "remove":
-            removed = store.remove_fact(int(args["fact_id"]))
+            removed = store.remove_fact(
+                int(args["fact_id"]), scope=CONFIG.category_scope
+            )
             return _json({"removed": removed})
 
         if action == "list":
             facts = store.list_facts(
-                category=args.get("category"),
+                category=category,
                 min_trust=float(args.get("min_trust", 0.0)),
-                limit=int(args.get("limit", 10)),
+                limit=limit,
             )
             return _json({"facts": facts, "count": len(facts)})
 
@@ -371,10 +414,16 @@ def _handle_fact_store(args: dict) -> str:
 
 def _handle_fact_feedback(args: dict) -> str:
     try:
+        if CONFIG.read_only:
+            return _tool_error("read-only memory server: feedback disabled")
         fact_id = int(args["fact_id"])
+        if args["action"] not in ("helpful", "unhelpful"):
+            return _tool_error("unknown feedback action")
         helpful = args["action"] == "helpful"
         store, _ = _get_state()
-        result = store.record_feedback(fact_id, helpful=helpful)
+        result = store.record_feedback(
+            fact_id, helpful=helpful, scope=CONFIG.category_scope
+        )
         return _json(result)
     except KeyError as exc:
         return _tool_error(f"Missing required argument: {exc}")
@@ -461,10 +510,9 @@ def fact_feedback(
 # Server wiring
 # ---------------------------------------------------------------------------
 
-def create_server() -> MCPServer:
-    server = MCPServer(
+def create_server() -> FastMCP:
+    server = FastMCP(
         name="vecmemori-plus",
-        version="0.2.0",
         instructions=(
             "Local fact memory (SQLite + FTS5 + optional Japanese embeddings). "
             "Store durable facts with fact_store action=add, recall with "

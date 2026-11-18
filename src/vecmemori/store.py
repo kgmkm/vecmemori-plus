@@ -21,16 +21,17 @@ from ._tokenizer import tokenize, tokenize_query
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    content         TEXT NOT NULL UNIQUE,
+    content         TEXT NOT NULL,
     fts_text        TEXT DEFAULT '',  -- fugashi-tokenized text for FTS5 search
-    category        TEXT DEFAULT 'general',
+    category        TEXT NOT NULL DEFAULT 'general',
     tags            TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
     retrieval_count INTEGER DEFAULT 0,
     helpful_count   INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ruri_embedding  BLOB
+    ruri_embedding  BLOB,
+    UNIQUE (category, content)
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -104,6 +105,9 @@ class MemoryStore:
             db_path = "memory.db"
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        import math
+        if not math.isfinite(default_trust):
+            raise ValueError("default_trust must be finite")
         self.default_trust = _clamp_trust(default_trust)
         self.require_embeddings = require_embeddings
         self._conn: sqlite3.Connection = sqlite3.connect(
@@ -136,6 +140,9 @@ class MemoryStore:
         if "ruri_embedding" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN ruri_embedding BLOB")
 
+        if self._migrate_category_uniqueness():
+            needs_fts_rebuild = True
+
         if needs_fts_rebuild:
             self._backfill_fts_text()
             self._rebuild_fts()
@@ -144,6 +151,58 @@ class MemoryStore:
             self._ensure_fts_consistency()
 
         self._conn.commit()
+
+    def _migrate_category_uniqueness(self) -> bool:
+        """Preserve existing fact IDs while migrating from global content uniqueness.
+
+        Categories are isolation partitions for MCP agents. Identical text may
+        belong to different categories, but not twice to the same category.
+        Rebuild FTS5 afterward to restore its triggers and rows.
+        """
+        ddl = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts'"
+        ).fetchone()[0]
+        if not re.search(r"content\s+TEXT\s+NOT\s+NULL\s+UNIQUE", ddl, re.I):
+            return False
+        with self._conn:
+            self._conn.execute("DROP TRIGGER IF EXISTS facts_ai")
+            self._conn.execute("DROP TRIGGER IF EXISTS facts_ad")
+            self._conn.execute("DROP TRIGGER IF EXISTS facts_au")
+            self._conn.execute("""
+                CREATE TABLE facts_new (
+                    fact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    fts_text TEXT DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'general',
+                    tags TEXT DEFAULT '',
+                    trust_score REAL DEFAULT 0.5,
+                    retrieval_count INTEGER DEFAULT 0,
+                    helpful_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ruri_embedding BLOB,
+                    UNIQUE (category, content)
+                )
+            """)
+            self._conn.execute("""
+                INSERT INTO facts_new (
+                    fact_id, content, fts_text, category, tags, trust_score,
+                    retrieval_count, helpful_count, created_at, updated_at,
+                    ruri_embedding
+                ) SELECT fact_id, content, fts_text,
+                    COALESCE(category, 'general'), tags, trust_score,
+                    retrieval_count, helpful_count, created_at, updated_at,
+                    ruri_embedding FROM facts
+            """)
+            self._conn.execute("DROP TABLE facts")
+            self._conn.execute("ALTER TABLE facts_new RENAME TO facts")
+            self._conn.execute(
+                "CREATE INDEX idx_facts_trust ON facts(trust_score DESC)"
+            )
+            self._conn.execute(
+                "CREATE INDEX idx_facts_category ON facts(category)"
+            )
+        return True
 
     # ------------------------------------------------------------------
     # FTS5 migration helpers
@@ -256,41 +315,45 @@ class MemoryStore:
         category: str = "general",
         tags: str = "",
     ) -> int:
-        """Insert a fact and return its fact_id.
+        """Insert a fact, deduplicating within its category only.
 
-        Automatically tokenizes content with fugashi for FTS5 Japanese search.
-        Deduplicates by content (UNIQUE constraint). On duplicate, returns
-        the existing fact_id without modifying the row. Extracts entities from
-        the content and links them to the fact.
+        Content, embedding and entity links are committed atomically.
         """
         with self._lock:
             content = content.strip()
             if not content:
                 raise ValueError("content must not be empty")
+            if not category:
+                raise ValueError("category must not be empty")
 
             fts_text = tokenize(content)
             embedding_blob = self._encode_doc_blob(content)
+            entities = self._extract_entities(content)
 
-            try:
-                cur = self._conn.execute(
-                    """
-                    INSERT INTO facts (content, fts_text, category, tags, trust_score, ruri_embedding)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (content, fts_text, category, tags, self.default_trust, embedding_blob),
-                )
-                self._conn.commit()
-                fact_id: int = cur.lastrowid  # type: ignore[assignment]
-            except sqlite3.IntegrityError:
-                row = self._conn.execute(
-                    "SELECT fact_id FROM facts WHERE content = ?", (content,)
-                ).fetchone()
-                return int(row["fact_id"])
+            with self._conn:
+                try:
+                    cur = self._conn.execute(
+                        """
+                        INSERT INTO facts (
+                            content, fts_text, category, tags, trust_score, ruri_embedding
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (content, fts_text, category, tags,
+                         self.default_trust, embedding_blob),
+                    )
+                except sqlite3.IntegrityError:
+                    row = self._conn.execute(
+                        "SELECT fact_id FROM facts WHERE category = ? AND content = ?",
+                        (category, content),
+                    ).fetchone()
+                    if row is None:
+                        raise
+                    return int(row["fact_id"])
 
-            for name in self._extract_entities(content):
-                entity_id = self._resolve_entity(name)
-                self._link_fact_entity(fact_id, entity_id)
-
+                fact_id = int(cur.lastrowid)
+                for name in entities:
+                    entity_id = self._resolve_entity(name)
+                    self._link_fact_entity(fact_id, entity_id)
             return fact_id
 
     def search_facts(
@@ -355,72 +418,83 @@ class MemoryStore:
         trust_delta: float | None = None,
         tags: str | None = None,
         category: str | None = None,
+        scope: str | None = None,
     ) -> bool:
-        """Partially update a fact. Trust is clamped to [0, 1].
-
-        Returns True if the row existed, False otherwise.
-        """
+        """Update a fact atomically; scoped callers cannot change its category."""
         with self._lock:
+            where = "fact_id = ?"
+            lookup = [fact_id]
+            if scope is not None:
+                where += " AND category = ?"
+                lookup.append(scope)
+                if category is not None and category != scope:
+                    raise ValueError("category outside configured scope")
             row = self._conn.execute(
-                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
+                f"SELECT fact_id, trust_score FROM facts WHERE {where}", lookup
             ).fetchone()
             if row is None:
                 return False
 
-            assignments: list[str] = ["updated_at = CURRENT_TIMESTAMP"]
-            params: list = []
-
+            assignments = ["updated_at = CURRENT_TIMESTAMP"]
+            params = []
+            entities = None
             if content is not None:
-                assignments.append("content = ?")
-                params.append(content.strip())
-                fts_text = tokenize(content.strip())
-                assignments.append("fts_text = ?")
-                params.append(fts_text)
+                content = content.strip()
+                if not content:
+                    raise ValueError("content must not be empty")
+                # Encode BEFORE changing the row. In FTS-only mode, clear
+                # stale embeddings rather than retaining a mismatched vector.
+                embedding_blob = self._encode_doc_blob(content)
+                entities = self._extract_entities(content)
+                assignments.extend(("content = ?", "fts_text = ?", "ruri_embedding = ?"))
+                params.extend((content, tokenize(content), embedding_blob))
             if tags is not None:
                 assignments.append("tags = ?")
                 params.append(tags)
             if category is not None:
+                if not category:
+                    raise ValueError("category must not be empty")
                 assignments.append("category = ?")
                 params.append(category)
             if trust_delta is not None:
-                new_trust = _clamp_trust(row["trust_score"] + trust_delta)
+                import math
+                if not math.isfinite(trust_delta):
+                    raise ValueError("trust_delta must be finite")
                 assignments.append("trust_score = ?")
-                params.append(new_trust)
-
-            params.append(fact_id)
-            self._conn.execute(
-                f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
-                params,
-            )
-            self._conn.commit()
-
-            if content is not None:
+                params.append(_clamp_trust(row["trust_score"] + trust_delta))
+            params.extend(lookup)
+            with self._conn:
                 self._conn.execute(
-                    "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
+                    f"UPDATE facts SET {', '.join(assignments)} WHERE {where}",
+                    params,
                 )
-                for name in self._extract_entities(content):
-                    entity_id = self._resolve_entity(name)
-                    self._link_fact_entity(fact_id, entity_id)
-                self._conn.commit()
-
-                self._compute_ruri_embedding(fact_id, content)
-
+                if entities is not None:
+                    self._conn.execute(
+                        "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
+                    )
+                    for name in entities:
+                        entity_id = self._resolve_entity(name)
+                        self._link_fact_entity(fact_id, entity_id)
             return True
 
-    def remove_fact(self, fact_id: int) -> bool:
-        """Delete a fact and its entity links. Returns True if the row existed."""
+    def remove_fact(self, fact_id: int, scope: str | None = None) -> bool:
+        """Delete a fact and its entity links, respecting an optional scope."""
         with self._lock:
+            where = "fact_id = ?"
+            params = [fact_id]
+            if scope is not None:
+                where += " AND category = ?"
+                params.append(scope)
             row = self._conn.execute(
-                "SELECT fact_id FROM facts WHERE fact_id = ?", (fact_id,)
+                f"SELECT fact_id FROM facts WHERE {where}", params
             ).fetchone()
             if row is None:
                 return False
-
-            self._conn.execute(
-                "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
-            )
-            self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
-            self._conn.commit()
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
+                )
+                self._conn.execute(f"DELETE FROM facts WHERE {where}", params)
             return True
 
     def list_facts(
@@ -453,7 +527,7 @@ class MemoryStore:
             rows = self._conn.execute(sql, params).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
-    def record_feedback(self, fact_id: int, helpful: bool) -> dict:
+    def record_feedback(self, fact_id: int, helpful: bool, scope: str | None = None) -> dict:
         """Record user feedback and adjust trust asymmetrically.
 
         helpful=True  -> trust += 0.05, helpful_count += 1
@@ -463,9 +537,11 @@ class MemoryStore:
         Raises KeyError if fact_id does not exist.
         """
         with self._lock:
+            where = "fact_id = ?" if scope is None else "fact_id = ? AND category = ?"
+            params = (fact_id,) if scope is None else (fact_id, scope)
             row = self._conn.execute(
-                "SELECT fact_id, trust_score, helpful_count FROM facts WHERE fact_id = ?",
-                (fact_id,),
+                f"SELECT fact_id, trust_score, helpful_count FROM facts WHERE {where}",
+                params,
             ).fetchone()
             if row is None:
                 raise KeyError(f"fact_id {fact_id} not found")
@@ -481,9 +557,8 @@ class MemoryStore:
                 SET trust_score    = ?,
                     helpful_count  = helpful_count + ?,
                     updated_at     = CURRENT_TIMESTAMP
-                WHERE fact_id = ?
-                """,
-                (new_trust, helpful_increment, fact_id),
+                WHERE """ + where,
+                (new_trust, helpful_increment, *params),
             )
             self._conn.commit()
 
@@ -527,7 +602,7 @@ class MemoryStore:
         Returns the entity_id.
         """
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])
@@ -535,7 +610,7 @@ class MemoryStore:
         alias_row = self._conn.execute(
             """
             SELECT entity_id FROM entities
-            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'
+            WHERE instr(lower(',' || aliases || ','), lower(',' || ? || ',')) > 0
             """,
             (name,),
         ).fetchone()
@@ -545,7 +620,6 @@ class MemoryStore:
         cur = self._conn.execute(
             "INSERT INTO entities (name) VALUES (?)", (name,)
         )
-        self._conn.commit()
         return int(cur.lastrowid)  # type: ignore[return-value]
 
     def _link_fact_entity(self, fact_id: int, entity_id: int) -> None:
@@ -557,7 +631,6 @@ class MemoryStore:
             """,
             (fact_id, entity_id),
         )
-        self._conn.commit()
 
     def _encode_doc_blob(self, content: str) -> bytes | None:
         """Encode content and return an embedding blob.

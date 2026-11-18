@@ -38,6 +38,15 @@ SOFTWARE.
 
 ---
 
+## MCP Python SDK — MIT License
+
+`mcp>=1.10,<2` is a direct dependency for the stdio MCP server.
+The MCP SDK is obtained from PyPI during installation, not vendored in
+this repository. Its upstream MIT license and notices remain applicable.
+See https://github.com/modelcontextprotocol/python-sdk/blob/main/LICENSE.
+
+---
+
 ## NumPy — BSD-3-Clause License
 
 NumPy is a direct dependency of vecmemori (core).

@@ -176,7 +176,7 @@ The `reason`/`contradict` actions are pragmatic semantic recall helpers, not sym
 
 ## MCP server (multi-agent shared memory)
 
-The `vecmemori.mcp_server` module exposes the same fact memory to **any MCP host** — Hermes, opencode, goose, OpenClaw, and other MCP-compatible agents. All agents share one SQLite database, one embedding model, one truth.
+The `vecmemori.mcp_server` module exposes the same fact memory to **any MCP host** — Hermes, opencode, goose, OpenClaw, and other MCP-compatible agents. Agents may share a SQLite database, but stored text and feedback are *not* verified truth. Configure category scopes or separate databases for agents with different permissions.
 
 > **Connection-tested:** opencode 1.18, goose 1.49, OpenClaw 2026.9 (write + cross-agent read + feedback verified against one shared DB).
 
@@ -199,8 +199,33 @@ Configuration via environment variables:
 | `VECMEMORI_FTS_ONLY` | off | `1` disables embeddings (no model load, FTS5 keyword search only) |
 | `VECMEMORI_FACT_LANGUAGE` | unset | language guard for stored facts (`ja`, `en`, `ko`, `zh`) |
 | `VECMEMORI_MIN_TRUST` | `0.3` | minimum trust filter for search results |
+| `VECMEMORI_CATEGORY_SCOPE` | unset | Restrict this MCP process to one category for all reads, writes, and feedback |
+| `VECMEMORI_READ_ONLY` | off | Set `1` to disable `add`, `update`, `remove`, and feedback |
 
 Tools exposed: `fact_store` (actions: add / search / probe / related / reason / contradict / update / remove / list) and `fact_feedback` (helpful / unhelpful).
+
+**Multi-agent security:** The stdio MCP process does not authenticate individual
+clients. An operator-configured `VECMEMORI_CATEGORY_SCOPE` is enforced by the
+server and the store's scoped update/delete/feedback methods; clients cannot
+override it with `category` arguments or a fact ID. To provide separate
+permissions, launch separate MCP server processes with distinct scopes (or
+distinct databases). Do **not** expose an unscoped writable server to
+untrusted agents. Set `VECMEMORI_READ_ONLY=1` for read-only retrieval clients.
+Trust scores are editable, heuristic feedback—not cryptographic evidence or
+verified facts. A compromised authorized writer can still change its own
+category.
+
+Retrieval limits are 1–50 results for MCP calls and up to 8 entities for
+`reason`. Native `FactRetriever.search` permits 1–100 results. FTS-only
+mode matches indexed tokens, **not** semantic paraphrases. Hybrid mode now
+scores stored vectors across the entire selected category rather than
+silently ignoring older records, using bounded batches; its cost scales
+linearly with the number of stored embeddings.
+
+**Schema migration:** Opening an older database automatically rebuilds the
+legacy globally unique `facts.content` constraint as uniqueness within
+`(category, content)` and rebuilds FTS5 while preserving fact IDs and
+entity links. Back up the SQLite database before first upgrade.
 
 ### Agent configuration snippets
 
