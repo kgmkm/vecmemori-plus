@@ -49,8 +49,9 @@ async def run() -> None:
                 ), 30)
                 assert '"status": "added"' in r.content[0].text, r.content[0].text
 
+                # FTS-only validates exact token recall, not semantic paraphrases.
                 r2 = await asyncio.wait_for(session.call_tool(
-                    "fact_store", {"action": "search", "query": "美咲の年齢は?", "limit": 5}
+                    "fact_store", {"action": "search", "query": "桜井美咲", "limit": 5}
                 ), 30)
                 assert "桜井美咲" in r2.content[0].text, r2.content[0].text
 
@@ -63,6 +64,11 @@ async def run() -> None:
                 print("ADD/SEARCH/FEEDBACK: OK")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_mcp_stdio() -> None:
+    """Ensure the published MCP executable runs during pytest, too."""
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import heapq
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -55,7 +56,6 @@ class FactRetriever:
 
         self.fts_weight = fts_weight
         self.ruri_weight = ruri_weight
-        self._query_embedding = None
 
     def search(
         self,
@@ -65,110 +65,95 @@ class FactRetriever:
         limit: int = 10,
         fts_query: str | None = None,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → neural rerank → trust weighting.
+        """Return the highest-scoring lexical AND semantic hits.
 
-        Pipeline:
-        1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Neural similarity: neural embedding cosine similarity
-        3. Trust weighting: final_score = relevance * trust_score
-        4. Temporal decay (optional)
-
-        fts_query optionally overrides the FTS5 MATCH expression while the
-        original query still drives the neural embedding. Callers use it to
-        OR-expand natural-language queries without polluting the semantic path.
-
-        Returns list of dicts with fact data + 'score' field, sorted by score desc.
+        Hybrid mode scans all stored vectors in bounded batches, not only
+        recent facts or FTS matches. The query embedding is local to this
+        call, so concurrent requests cannot overwrite each other's state.
         """
-        self._query_embedding = None
-        candidates = self._fts_candidates(
-            fts_query if fts_query is not None else query,
-            category, min_trust, limit * 3,
-        )
+        if type(limit) is not int or not (1 <= limit <= 100):
+            raise ValueError("limit must be an integer from 1 to 100")
+        if not isinstance(query, str):
+            raise ValueError("query must be text")
+        if not query.strip():
+            return []
+        if not math.isfinite(min_trust) or not (0 <= min_trust <= 1):
+            raise ValueError("min_trust must be finite and between 0 and 1")
 
-        if not candidates:
-            if self.ruri_weight > 0 and self._embedding_available():
-                candidates = self._all_facts(category, min_trust, limit * 3)
-            if not candidates:
-                return []
+        candidates = {
+            f["fact_id"]: f for f in self._fts_candidates(
+                fts_query if fts_query is not None else query,
+                category, min_trust, limit * 3,
+            )
+        }
+        use_embeddings = self.ruri_weight > 0 and self._embedding_available()
+        query_emb = self._get_query_embedding(query) if use_embeddings else None
 
-        query_tokens_set = set(query.lower().split()) if query else set()
-        scored = []
+        # Keep only top-k candidates in memory regardless of corpus size.
+        heap: list[tuple[float, int, dict]] = []
 
-        for fact in candidates:
-            fts_score = fact.get("fts_rank", 0.0)
-
-            # Neural cosine similarity. Missing embeddings are not treated as
-            # neutral relevance; they are ignored for the neural component.
-            embedding_sim = 0.0
-            if self.ruri_weight > 0 and fact.get("ruri_embedding"):
-                query_emb = self._get_query_embedding(query)
-                fact_emb = np.frombuffer(fact["ruri_embedding"], dtype=np.float32)
-                if query_emb.shape == fact_emb.shape:
-                    embedding_sim = float(np.dot(query_emb, fact_emb))
-
+        def consider(fact: dict, embedding_sim: float) -> None:
+            fts_score = fact.pop("fts_rank", 0.0)
             relevance = self.fts_weight * fts_score + self.ruri_weight * embedding_sim
             score = relevance * fact["trust_score"]
-
             if self.half_life > 0:
-                score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
-
-            fact["score"] = score
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "search q=%r fact#%d: fts=%.3f embedding=%.3f trust=%.2f → %.4f",
-                    query[:40], fact["fact_id"],
-                    fts_score, embedding_sim,
-                    fact["trust_score"], score,
+                score *= self._temporal_decay(
+                    fact.get("updated_at") or fact.get("created_at")
                 )
-            scored.append(fact)
-
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:limit]
-        for fact in results:
+            if not math.isfinite(score) or score <= 0:
+                return
+            fact["score"] = score
             fact.pop("ruri_embedding", None)
+            item = (score, fact["fact_id"], fact)
+            if len(heap) < limit:
+                heapq.heappush(heap, item)
+            elif item[:2] > heap[0][:2]:
+                heapq.heapreplace(heap, item)
+
+        if use_embeddings:
+            where = ["trust_score >= ?", "ruri_embedding IS NOT NULL"]
+            params: list = [min_trust]
+            if category is not None:
+                where.append("category = ?")
+                params.append(category)
+            sql = "SELECT * FROM facts WHERE " + " AND ".join(where)
+
+            with self.store._lock:
+                cursor = self.store._conn.execute(sql, params)
+                while batch := cursor.fetchmany(256):
+                    for row in batch:
+                        fid = row["fact_id"]
+                        fact = candidates.pop(fid, None) or dict(row)
+                        raw = row["ruri_embedding"]
+                        if not raw or len(raw) % 4:
+                            consider(fact, 0.0)
+                            continue
+                        vec = np.frombuffer(raw, dtype=np.float32)
+                        if vec.shape != query_emb.shape:
+                            consider(fact, 0.0)
+                            continue
+                        sim = float(np.dot(query_emb, vec))
+                        consider(fact, sim)
+
+        for fact in candidates.values():
+            consider(fact, 0.0)
 
         if self._ruri_keep_alive == 0 and _HAS_EMBEDDER_MODULE:
             from ._embedder import unload_model
             unload_model()
-        return results
+        return [item[2] for item in sorted(heap, reverse=True)]
 
     def _embedding_available(self) -> bool:
         return _HAS_EMBEDDER_MODULE and embedding_is_available()
 
     def _get_query_embedding(self, query: str) -> "np.ndarray":
-        """Compute and cache query embedding for the current search."""
+        """Use global cached encoding without storing mutable per-query state."""
         if not _HAS_EMBEDDER_MODULE:
             raise RuntimeError("Embedding dependencies are not installed")
-        if self._query_embedding is None:
-            vec = encode_query_cached(query)
-            if vec is None:
-                raise RuntimeError("Embedding model failed to encode query")
-            self._query_embedding = vec
-        return self._query_embedding
-
-    def _all_facts(
-        self,
-        category: str | None,
-        min_trust: float,
-        limit: int,
-    ) -> list[dict]:
-        """Fallback: get all facts when FTS5 returns nothing.
-
-        Uses a generous multiplier to ensure neural search has enough candidates.
-        """
-        conn = self.store._conn
-        where = ["f.trust_score >= ?"]
-        params: list = [min_trust]
-        if category:
-            where.append("f.category = ?")
-            params.append(category)
-        effective_limit = max(limit, 200)
-        params.append(effective_limit)
-        rows = conn.execute(
-            f"SELECT f.*, 0.5 as fts_rank FROM facts f WHERE {' AND '.join(where)} ORDER BY f.fact_id DESC LIMIT ?",
-            params,
-        ).fetchall()
-        return [dict(r) for r in rows]
+        vec = encode_query_cached(query)
+        if vec is None:
+            raise RuntimeError("Embedding model failed to encode query")
+        return vec
 
     def _fts_candidates(
         self,
@@ -208,10 +193,8 @@ class FactRetriever:
         """
         params.append(limit)
 
-        try:
+        with self.store._lock:
             rows = conn.execute(sql, params).fetchall()
-        except Exception:
-            return []
 
         if not rows:
             return []

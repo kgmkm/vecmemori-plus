@@ -198,8 +198,28 @@ VECMEMORI_FTS_ONLY=1 python -m vecmemori.mcp_server
 | `VECMEMORI_FTS_ONLY` | off | `1` で埋め込みを無効化(FTS5のみ) |
 | `VECMEMORI_FACT_LANGUAGE` | 未設定 | 保存言語ガード(`ja`/`en`/`ko`/`zh`) |
 | `VECMEMORI_MIN_TRUST` | `0.3` | 検索の最低trust |
+| `VECMEMORI_CATEGORY_SCOPE` | 未設定 | MCPプロセスの読み取り・書き込み・フィードバックを指定カテゴリに制限 |
+| `VECMEMORI_READ_ONLY` | off | `1` で追加・更新・削除・フィードバックを禁止 |
 
 公開ツール: `fact_store`(アクション: add / search / probe / related / reason / contradict / update / remove / list)、`fact_feedback`(helpful / unhelpful)。
+
+**マルチエージェントの境界:** stdio MCPプロセス自体は個々のクライアントを
+認証しません。オペレーターが設定する `VECMEMORI_CATEGORY_SCOPE` は、
+検索・一覧・更新・削除・feedback に適用され、クライアントはカテゴリ指定や
+fact ID で回避できません。権限が異なるエージェントには、それぞれ別の
+MCPプロセス（または別のDB）を使用してください。信頼できないエージェントに
+制限なしの書き込み可能なサーバーを公開しないでください。
+読み取り専用の場合は `VECMEMORI_READ_ONLY=1` を設定してください。
+trustスコアは編集可能な評価値であり、検証済みの事実や証拠ではありません。
+
+MCP検索の上限は50件、`reason` は8個のエンティティです。
+FTS専用モードは索引済み単語を検索し、意味的な言い換えは保証しません。
+ハイブリッド検索はカテゴリ内の全埋め込みをバッチ処理で評価し、
+古い記録を新着200件の制限で見落としません（計算量は件数に比例します）。
+
+**スキーマ移行:** 初回起動時に旧DBの `content` 単独UNIQUE制約を
+`(category, content)` に移行し、fact IDとentity linkを保持してFTS5を再構築します。
+アップグレード前にSQLite DBをバックアップしてください。
 
 ### 各エージェントの設定
 
